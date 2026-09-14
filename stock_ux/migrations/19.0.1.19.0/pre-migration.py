@@ -44,8 +44,61 @@ OBSOLETE_MODULES = (
 )
 
 
+def _migrar_remitos_stock_voucher(cr):
+    """
+    Migra los remitos historicos de stock_voucher hacia stock_picking.l10n_ar_delivery_guide_number
+    y hace un backup permanente de la tabla stock_picking_voucher antes de cualquier limpieza.
+    """
+    cr.execute("ALTER TABLE stock_picking ADD COLUMN IF NOT EXISTS l10n_ar_delivery_guide_number VARCHAR")
+
+    cr.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.tables 
+             WHERE table_schema = 'public' 
+               AND table_name = 'stock_picking_voucher'
+        )
+    """)
+    if cr.fetchone()[0]:
+        cr.execute("""
+            CREATE TABLE IF NOT EXISTS stock_picking_voucher_backup AS 
+            SELECT * FROM stock_picking_voucher
+        """)
+        _logger.info("stock_ux pre-migration: tabla stock_picking_voucher_backup asegurada")
+
+        cr.execute("""
+            UPDATE stock_picking p
+               SET l10n_ar_delivery_guide_number = sub.remitos
+              FROM (
+                  SELECT picking_id, string_agg(name, ', ' ORDER BY id) AS remitos
+                    FROM stock_picking_voucher
+                   WHERE name IS NOT NULL AND trim(name) != ''
+                   GROUP BY picking_id
+              ) sub
+             WHERE p.id = sub.picking_id
+               AND (p.l10n_ar_delivery_guide_number IS NULL OR trim(p.l10n_ar_delivery_guide_number) = '')
+        """)
+        _logger.info("stock_ux pre-migration: %s remitos migrados desde stock_picking_voucher a l10n_ar_delivery_guide_number", cr.rowcount)
+
+    cr.execute("""
+        SELECT EXISTS (
+            SELECT FROM information_schema.columns 
+             WHERE table_name = 'stock_picking' 
+               AND column_name = 'vouchers'
+        )
+    """)
+    if cr.fetchone()[0]:
+        cr.execute("""
+            UPDATE stock_picking
+               SET l10n_ar_delivery_guide_number = vouchers
+             WHERE (l10n_ar_delivery_guide_number IS NULL OR trim(l10n_ar_delivery_guide_number) = '')
+               AND vouchers IS NOT NULL AND trim(vouchers) != ''
+        """)
+        _logger.info("stock_ux pre-migration: %s remitos migrados desde stock_picking.vouchers a l10n_ar_delivery_guide_number", cr.rowcount)
+
+
 def migrate(cr, version):
-    _logger.info("stock_ux pre-migration: iniciando limpieza de vistas y campos obsoletos (v19)")
+    _logger.info("stock_ux pre-migration: iniciando limpieza y migracion de remitos (v19)")
+    _migrar_remitos_stock_voucher(cr)
 
     # 1. Semillas por XMLID de ir_model_data
     cr.execute(
